@@ -11,6 +11,8 @@ You need the following things installed on your machine:
   * git plugin `helm plugin install https://github.com/aslafy-z/helm-git`
 * [helmfile](https://github.com/helmfile/helmfile#installation)
 * [kubectl](https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/)
+* [jq](https://jqlang.github.io/jq/download/) (required by local convenience scripts)
+* [jo](https://github.com/jpmens/jo#installation) (required by local convenience scripts)
 * (optional) [yamllint](https://github.com/adrienverge/yamllint#installation)
 
 ## Makefile
@@ -18,6 +20,19 @@ This repo has a [`Makefile`](../Makefile) in the root directory which allows us 
 Usage: `make <command>`. Example: `make minikube-start`.  
 
 This doc will reference the `make` commands where available. View the [`Makefile`](../Makefile) to see all the available commands and what they do.
+
+## Quick automated setup (optional)
+
+If you want to skip the step-by-step instructions below, the script `bin/local/new-local-cluster.sh` will **delete and completely re-create** your local cluster in one shot (~20 minutes, no interactive prompts required). It runs `minikube delete`, `minikube start`, `tofu apply`, and `helmfile apply`/`helmfile sync` automatically.
+
+```sh
+./bin/local/new-local-cluster.sh
+```
+
+> [!WARNING]
+> All data in an existing local cluster will be lost. The script requires the `terraform.tfvars` file to already be in place (see the [opentofu](#opentofu) section below).
+
+After the script finishes, open the tunnel (`make minikube-tunnel`) and then run `./bin/local/create-local-user.sh` to create a user account.
 
 ## minikube cluster
 
@@ -69,6 +84,11 @@ To initialise opentofu for the local environment, run the following in the `tf/e
 tofu init
 ```
 
+For convenience, you can also run the following from the root of the repository:
+```sh
+make init-local
+```
+
 For convenience, you can store local secrets for the cluster in `.tfvars` files which will be ignored by git. 
 
 Create a `terraform.tfvars` file in `tf/env/local` and add the needed local secrets to it.
@@ -86,7 +106,7 @@ recaptcha_v2_secret   = "insert_actual_secret_here"
 ```
 
 ### Botstopper
-We need a secret to pull the botstopper image from a private GitHub Container Registry. Unfortunately this secret is only available to WMDE staff or to others who have access to this registry.
+We need a secret to pull the botstopper image from a private GitHub Container Registry. This secret is only available to WMDE staff or others with access to this registry.
 
 This secret looks like:
 ```
@@ -104,6 +124,20 @@ EOT
 ```
 
 You can reach out to your fellow engineers for this.
+
+> [!NOTE]
+> If you don't have access to the registry, you can generate a minimal pull-secret value yourself using a GitHub classic token (with `read:packages` scope) that has access to `ghcr.io`. You can generate the `.dockerconfigjson` structure with the following command and then paste the output into your `terraform.tfvars`:
+> ```sh
+> kubectl create secret docker-registry botstopper-image-pull \
+>   --dry-run=client \
+>   --docker-server=ghcr.io \
+>   --docker-username=placeholder-username \
+>   --docker-password=<your-github-token> \
+>   -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d
+> ```
+> Note: as of January 2026 the username is not checked by GitHub, so `placeholder-username` is fine.
+> 
+> If you have no access at all and just want the rest of the stack to come up, you can also supply any syntactically valid JSON value — the botstopper pod will simply fail to pull its image but all other pods will still start correctly.
 
 To review the changes between what is applied to the infrastructure and the current configuration run:
 
@@ -217,7 +251,7 @@ minikube does not provision LoadBalancer service IP addresses as part of normal 
 make minikube-tunnel
 ```
 
-You should now be able to access the ingress via http://www.wbaas.dev/ (*.wbaas.dev should point to 127.0.0.1, otherwise you'll need to edit your hosts file).
+You should now be able to access the ingress via https://www.wbaas.dev/ (*.wbaas.dev should point to 127.0.0.1, otherwise you'll need to edit your hosts file).
 
 > [!NOTE]
 > Previously `*.wbaas.localhost` was used for this purpose
@@ -240,7 +274,7 @@ Since we [introduced](https://phabricator.wikimedia.org/T378691) using HTTPS for
 
 For the local setup, [Mailhog](https://github.com/mailhog/MailHog) is used to capture outbound emails.
 
-You can view those emails by going to http://mailhog.wbaas.dev/
+You can view those emails by going to https://mailhog.wbaas.dev/
 
 ## Mediawiki debugging 
 ### logging
@@ -270,9 +304,42 @@ Xdebug can be enabled in your minikube cluster if you use mediawiki image with `
   * Follow this tutorial in the section "Debug PHP using Xdebug and VS Code" https://php.tutorials24x7.com/blog/how-to-debug-php-using-xdebug-and-visual-studio-code-on-ubuntu
 
 ## Create an account on wbaas.dev
-To use the local wbaas instance you have just setup, you will need to create an invitation code via the api which is needed when creating an account. Follow the [instructions](https://github.com/wbstack/api/blob/main/docs/invitation-codes.md) documented in the wbaas/api repo.
+To use the local wbaas instance you have just setup, you will need to create a user account and a wiki. The easiest way is to use the convenience scripts in `bin/local/`:
 
-After creating the invitation code, you can visit http://wbaas.dev/create-account (or click the create account link in the login form) and create an account. All outbound email is captured by Mailhog ([see above](#mailhog--local-emails)) so you can use a made up email address (e.g. `test@example.com`). Verify your email address via the "Account Creation Notification" email captured by Mailhog.
+> [!IMPORTANT]
+> The minikube tunnel must be open before running these scripts (`make minikube-tunnel`).
+
+### Create a user account
+
+```sh
+./bin/local/create-local-user.sh
+```
+
+This creates and immediately verifies the account `jane.doe@wikimedia.de` (password: `wikiwikiwiki`). You can override the defaults with environment variables:
+```sh
+USER_MAIL="you@example.com" USER_PASS="yourpassword" ./bin/local/create-local-user.sh
+```
+
+### Create a wiki
+
+Once you have a user account, run:
+
+```sh
+./bin/local/create-local-wiki.sh
+```
+
+This logs in with the default credentials and creates a new wiki at `local-test-wiki.wbaas.dev`. You can override the defaults:
+```sh
+USER_MAIL="you@example.com" USER_PASS="yourpassword" \
+  USER_WIKI_NAME="My Test Wiki" USER_WIKI_DOMAIN="my-test-wiki.wbaas.dev" \
+  ./bin/local/create-local-wiki.sh
+```
+
+> [!NOTE]
+> Wiki provisioning is asynchronous — it takes a minute or two after the script exits before the wiki is actually accessible. You can watch the progress in the api-queue pod logs.
+
+### Manual account creation (alternative method)
+If you prefer, you can also create an account manually via the web UI. You need to first create an invitation code by following the [instructions](https://github.com/wbstack/api/blob/main/docs/invitation-codes.md) in the wbaas/api repo. Then visit https://wbaas.dev/create-account and create an account. All outbound email is captured by Mailhog ([see above](#mailhog--local-emails)) so you can use a made-up email address (e.g. `test@example.com`). Verify your email address via the "Account Creation Notification" email captured by Mailhog.
 
 ## [Optional] setup bash completion
 Here is how to get tab completion working for common commands
@@ -330,7 +397,7 @@ Error: plugin "diff" exited with error
 
 it is likely because `make diff-local` uses the `--skip-deps` option when executing `helmfile diff` which skips downloading chart dependencies. To force the fetching of dependencies run `make helmfile-deps` before `make diff-local`. 
 
-### **Why can't I access [wbaas.dev](http://www.wbaas.dev)?**
+### **Why can't I access [wbaas.dev](https://www.wbaas.dev)?**
 Here are a few things to try:
   - make sure minikube is running `make minikube-start`
   - make sure the minikube tunnel is running `make minikube-tunnel`
